@@ -1,0 +1,156 @@
+🚀 Anchor Smart Contract Skeleton (Rust)
+rust
+Copy
+Edit
+use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Mint, Token, TokenAccount, MintTo, Transfer, Burn};
+
+declare_id!("YourProgramID");
+
+#[program]
+pub mod bonding_curve_launchpad {
+    use super::*;
+
+    pub fn initialize(ctx: Context<Initialize>, base_price: u64, slope: u64) -> Result<()> {
+        let state = &mut ctx.accounts.state;
+        state.base_price = base_price;
+        state.slope = slope;
+        state.total_sol_collected = 0;
+        state.total_supply = 0;
+        state.is_bonded = false;
+        Ok(())
+    }
+
+    pub fn buy(ctx: Context<Buy>, amount: u64) -> Result<()> {
+        let state = &mut ctx.accounts.state;
+        require!(!state.is_bonded, CustomError::BondedToRaydium);
+
+        // Calculate price and total cost
+        let price = state.base_price + state.slope * state.total_supply;
+        let total_cost = price * amount;
+
+        // Transfer SOL from buyer to vault
+        let ix = anchor_lang::solana_program::system_instruction::transfer(
+            ctx.accounts.buyer.key,
+            ctx.accounts.vault.key,
+            total_cost,
+        );
+        anchor_lang::solana_program::program::invoke(
+            &ix,
+            &[
+                ctx.accounts.buyer.to_account_info(),
+                ctx.accounts.vault.to_account_info(),
+            ],
+        )?;
+
+        // Mint tokens
+        let cpi_accounts = MintTo {
+            mint: ctx.accounts.mint.to_account_info(),
+            to: ctx.accounts.user_token_account.to_account_info(),
+            authority: ctx.accounts.state.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+        token::mint_to(cpi_ctx.with_signer(&[&[b"state", &[*ctx.bumps.get("state").unwrap()]]]), amount)?;
+
+        // Update state
+        state.total_supply += amount;
+        state.total_sol_collected += total_cost;
+
+        if state.total_sol_collected >= 69_000000000 {
+            state.is_bonded = true;
+            // Optionally emit event here
+        }
+
+        Ok(())
+    }
+
+    pub fn sell(ctx: Context<Sell>, amount: u64) -> Result<()> {
+        let state = &mut ctx.accounts.state;
+        require!(!state.is_bonded, CustomError::BondedToRaydium);
+
+        // Burn tokens
+        let cpi_accounts = Burn {
+            mint: ctx.accounts.mint.to_account_info(),
+            from: ctx.accounts.user_token_account.to_account_info(),
+            authority: ctx.accounts.buyer.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+        token::burn(cpi_ctx, amount)?;
+
+        // Calculate price and refund
+        let price = state.base_price + state.slope * (state.total_supply - amount);
+        let refund = price * amount;
+
+        // Transfer SOL from vault to user
+        **ctx.accounts.vault.try_borrow_mut_lamports()? -= refund;
+        **ctx.accounts.buyer.try_borrow_mut_lamports()? += refund;
+
+        state.total_supply -= amount;
+        state.total_sol_collected -= refund;
+
+        Ok(())
+    }
+
+    // add optional raydium bonding here later...
+}
+🗃️ State
+rust
+Copy
+Edit
+#[account]
+pub struct State {
+    pub base_price: u64,
+    pub slope: u64,
+    pub total_sol_collected: u64,
+    pub total_supply: u64,
+    pub is_bonded: bool,
+}
+📦 Accounts Context
+rust
+Copy
+Edit
+#[derive(Accounts)]
+pub struct Initialize<'info> {
+    #[account(init, payer = payer, space = 8 + 64, seeds = [b"state"], bump)]
+    pub state: Account<'info, State>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct Buy<'info> {
+    #[account(mut, seeds = [b"state"], bump)]
+    pub state: Account<'info, State>,
+    #[account(mut)]
+    pub vault: AccountInfo<'info>,
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+    #[account(mut)]
+    pub mint: Account<'info, Mint>,
+    #[account(mut)]
+    pub user_token_account: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct Sell<'info> {
+    #[account(mut, seeds = [b"state"], bump)]
+    pub state: Account<'info, State>,
+    #[account(mut)]
+    pub vault: AccountInfo<'info>,
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+    #[account(mut)]
+    pub mint: Account<'info, Mint>,
+    #[account(mut)]
+    pub user_token_account: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+🧩 Optional: Raydium Integration (auto-add liquidity)
+When is_bonded = true, you could:
+
+Send an off-chain transaction to add liquidity to Raydium (safest & easiest).
+
+Or use an on-chain CPI to Raydium (complex and unstable due to dependency).
+
